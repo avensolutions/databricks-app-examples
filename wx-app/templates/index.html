@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Weather Bricks</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand-text">Databricks Academy</div>
+      </div>
+
+      <h1>Weather Bricks</h1>
+      <p class="lede">
+        Clear skies with a 100% chance of better data insights.
+      </p>
+    </section>
+
+    <section class="card">
+      <form id="weather-form" class="lookup">
+        <label for="city">City</label>
+        <div class="lookup-row">
+          <input
+            id="city"
+            name="city"
+            type="text"
+            placeholder="e.g., Boston, Dallas, Las Vegas"
+            required
+          >
+          <button type="submit">Get Weather</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Current conditions (left) + 4-day forecast grid (right) in one card. -->
+    <section id="combo" class="card combo hidden">
+      <div id="cond-left" class="combo-left"></div>
+      <div id="fc-right" class="combo-right"></div>
+    </section>
+
+    <section id="report" class="result hidden"></section>
+
+    <footer class="footnote">
+      Weather data: <a href="https://www.weather.gov" rel="noopener">National Weather Service</a>
+      &middot;
+      Geocoding data &copy; <a href="https://www.geonames.org" rel="noopener">GeoNames</a>
+      (<a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC&nbsp;BY&nbsp;4.0</a>)
+    </footer>
+  </main>
+
+  <script>
+    const form = document.querySelector("#weather-form");
+    const combo = document.querySelector("#combo");
+    const condEl = document.querySelector("#cond-left");
+    const fcEl = document.querySelector("#fc-right");
+    const reportEl = document.querySelector("#report");
+    let currentCity = "";
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const city = document.querySelector("#city").value.trim();
+      if (!city) return;
+      currentCity = city;
+
+      combo.className = "card combo";
+      condEl.innerHTML = `<p class="muted">Loading current conditions…</p>`;
+      fcEl.innerHTML = `<p class="muted">Loading forecast…</p>`;
+      reportEl.className = "result card report";
+      reportEl.innerHTML = `<p class="muted">Generating AI summary…</p>`;
+
+      // Three independent endpoints — fire them all; the page fills in as each
+      // returns (conditions + forecast are fast; the AI summary lands last).
+      loadConditions(city);
+      loadForecast(city);
+      loadReport(city);
+    });
+
+    async function loadConditions(city) {
+      try {
+        const res = await fetch(`/api/weather/conditions?city=${encodeURIComponent(city)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          condEl.innerHTML = `<p class="error">${data.error || "Conditions lookup failed."}</p>`;
+          return;
+        }
+        const tU = data.temperature_unit || "";
+        const wU = data.wind_unit || "";
+        const chips = [
+          data.feels_like != null ? `<span>Feels like ${data.feels_like}${tU}</span>` : "",
+          data.humidity != null ? `<span>Humidity ${data.humidity}%</span>` : "",
+          data.wind_speed != null
+            ? `<span>Wind ${data.wind_speed} ${wU}${data.wind_direction ? " " + data.wind_direction : ""}</span>`
+            : "",
+        ].filter(Boolean).join("");
+        condEl.innerHTML = `
+          <p class="eyebrow">${data.source} · Now</p>
+          <h2>${data.location}</h2>
+          <div class="now-row">
+            ${data.icon_url ? `<img class="weather-icon" src="${data.icon_url}" alt="">` : ""}
+            <div>
+              ${data.temperature != null ? `<div class="temperature">${data.temperature}${tU}</div>` : ""}
+              ${data.condition ? `<p class="condition">${data.condition}</p>` : ""}
+            </div>
+          </div>
+          ${chips ? `<div class="metrics">${chips}</div>` : ""}`;
+      } catch (error) {
+        condEl.innerHTML = `<p class="error">Weather service is unreachable. Please try again.</p>`;
+      }
+    }
+
+    // NWS returns alternating day/night periods. Fold each daytime period and
+    // the night that follows it into a single day card: daytime temp = high,
+    // the following night temp = low, daytime icon/short-forecast as the face.
+    // A list that begins at night (evenings) yields a lone leading "Tonight".
+    function pairIntoDays(periods) {
+      const days = [];
+      let cur = null;
+      for (const p of periods) {
+        if (p.is_daytime) {
+          cur = { name: p.name, icon: p.icon_url, short: p.short_forecast, high: p.temperature, low: null };
+          days.push(cur);
+        } else if (cur && cur.low == null) {
+          cur.low = p.temperature;
+        } else {
+          cur = { name: p.name, icon: p.icon_url, short: p.short_forecast, high: null, low: p.temperature };
+          days.push(cur);
+        }
+      }
+      return days.slice(0, 4);
+    }
+
+    async function loadForecast(city) {
+      try {
+        const res = await fetch(`/api/weather/forecast?city=${encodeURIComponent(city)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          fcEl.innerHTML = `<p class="error">${data.error || "Forecast lookup failed."}</p>`;
+          return;
+        }
+        const cards = pairIntoDays(data.periods || []).map((d) => {
+          const temps = [
+            d.high != null ? `<span class="dc-hi">${d.high}°</span>` : "",
+            d.low != null ? `<span class="dc-lo">${d.low}°</span>` : "",
+          ].filter(Boolean).join(" / ");
+          return `
+            <div class="day-card">
+              <p class="dc-name">${d.name || ""}</p>
+              ${d.icon ? `<img class="dc-icon" src="${d.icon}" alt="">` : ""}
+              <p class="dc-temps">${temps}</p>
+              <p class="dc-short">${d.short || ""}</p>
+            </div>`;
+        }).join("");
+        fcEl.innerHTML = `
+          <p class="eyebrow">Forecast</p>
+          <div class="forecast-grid">${cards}</div>`;
+      } catch (error) {
+        fcEl.innerHTML = `<p class="error">Could not load the forecast.</p>`;
+      }
+    }
+
+    async function loadReport(city) {
+      reportEl.className = "result card report";
+      reportEl.innerHTML = `<p class="muted">Generating AI summary…</p>`;
+      try {
+        const res = await fetch(`/api/weather/report`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ city }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          reportEl.innerHTML = `<p class="error">${data.error || "Could not generate the summary."}</p>`;
+          return;
+        }
+        const paras = (data.report || "")
+          .trim()
+          .split(/\n\s*\n/)
+          .map((p) => `<p>${p.replace(/\n/g, " ")}</p>`)
+          .join("");
+        reportEl.innerHTML = `
+          <div class="report-head">
+            <p class="eyebrow">AI summary · ${data.location || ""}</p>
+            <button id="regen" class="link-btn" type="button">↻ Regenerate</button>
+          </div>
+          <div class="report-body">${paras}</div>`;
+        document.querySelector("#regen").addEventListener("click", () => loadReport(currentCity));
+      } catch (error) {
+        reportEl.innerHTML = `<p class="error">The summary service is unreachable.</p>`;
+      }
+    }
+  </script>
+</body>
+</html>
